@@ -171,14 +171,14 @@ func dynamicPage(uri string, w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("\n\nGetting Web Site Page from URI: %s\n\n", uri)
 
 	// Get the path to match from the DB
-	sql = fmt.Sprintf("SELECT * FROM web_site_page WHERE web_site_id = %d AND name = '%s'", web_site_id, SanitizeSQL(uri))
-	web_site_page_result := Query(db_web, sql)
+	sql = fmt.Sprintf("SELECT * FROM web_site_page WHERE web_site_id = %d AND name = '%s' ORDER BY _id DESC", web_site_id, SanitizeSQL(uri))
+	web_site_page_result := Query(db_web, sql)[0]
 	fmt.Printf("\n\nWeb Page Results: %v\n\n", web_site_page_result)
 
 	// Check if this is a match for an API call
 	found_api := false
 	web_site_api_result := make([]map[string]interface{}, 0)
-	web_site_api_entry := make(map[string]interface{})
+	web_site_api_entry := WebSiteAPI{}
 
 	if web_site["api_prefix_path"] == nil || strings.HasPrefix(uri, web_site["api_prefix_path"].(string)) {
 		short_path := uri
@@ -247,72 +247,52 @@ func dynamicPage(uri string, w http.ResponseWriter, r *http.Request) {
 }
 
 // Set up UDN data for an HTTP request
-func GetStartingUdnData(db_web *sql.DB, db *sql.DB, web_site map[string]interface{}, web_site_page map[string]interface{}, uri string, web_protocol_action string, body io.Reader, param_map map[string]interface{}, header_map map[string][]string, cookie_array []*http.Cookie) map[string]interface{} {
+func GetStartingUdnData(db_web *sql.DB, db *sql.DB, web_site map[string]interface{}, web_site_page map[string]interface{}, uri string, web_protocol_action string, body io.Reader, param_map map[string]interface{}, header_map map[string][]string, cookie_array []*http.Cookie) UdnData {
 
 	// Data pool for UDN
-	udn_data := make(map[string]interface{})
+	//udn_data := make(map[string]interface{})
+	udn_data := NewUdnData()
+	udn_data.WebSite = web_site
+	udn_data.WebSitePage = web_site_page
+	udn_data.Uri = uri
 
 	// Prepare the udn_data with it's fixed pools of data
 	//udn_data["widget"] = *NewTextTemplateMap()
-	udn_data["web_protocol_action"] = web_protocol_action
-	udn_data["data"] = make(map[string]interface{})
-	udn_data["temp"] = make(map[string]interface{})
-	udn_data["output"] = make(map[string]interface{}) // Staging output goes here, can share them with appending as well.
-	//TODO(g): Make args accessible at the start of every ExecuteUdnPart after getting the args!
-	udn_data["arg"] = make(map[string]interface{})          // Every function call blows this away, and sets the args in it's data, so it's accessable
-	udn_data["function_arg"] = make(map[string]interface{}) // Function arguments, from Stored UDN Function __function, sets the incoming function args
-	udn_data["page"] = make(map[string]interface{})         //TODO(g):NAMING: __widget is access here, and not from "widget", this can be changed, since thats what it is...
+	udn_data.WebProtocolAction = web_protocol_action
 
-	udn_data["set_api_result"] = make(map[string]interface{})   // If this is an API call, set values in here, which will be encoded in JSON and sent back to the client on return
-	udn_data["set_cookie"] = make(map[string]interface{})       // Set Cookies.  Any data set in here goes into a cookie.  Will use standard expiration and domain for now.
-	udn_data["set_header"] = make(map[string]interface{})       // Set HTTP Headers.
-	udn_data["set_http_options"] = make(map[string]interface{}) // Any other things we want to control from UDN, we put in here to be processed.  Can be anything, not based on a specific standard.
-	udn_data["http_response_code"] = 200                        // Default
+	//TODO(g): Make args accessible at the start of every ExecuteUdnPart after getting the args!
 
 	//TODO(g): Move this so we arent doing it every page load
-
-	// Get the params: map[string]interface{}
-	udn_data["param"] = make(map[string]interface{})
 
 	for key, value := range param_map {
 		//fmt.Printf("\n----KEY: %s  VALUE:  %s\n\n", key, value[0])
 		//TODO(g): Decide what to do with the extra headers in the array later, we may not want to allow this ever, but thats not necessarily true.  Think about it, its certainly not the typical case, and isnt required
-		udn_data["param"].(map[string]interface{})[key] = value
+		udn_data.Param[key] = value
 	}
 
 	// Get the JSON Body, if it exists, from an API-style call in
-	udn_data["api_input"] = make(map[string]interface{})
-	json_body := make(map[string]interface{})
 	decoder := json.NewDecoder(body)
-	err := decoder.Decode(&json_body)
+	err := decoder.Decode(&udn_data.JsonBody)
 	// If we got it, then add all the keys to api_input
 	if err == nil {
-		for body_key, body_value := range json_body {
-			udn_data["api_input"].(map[string]interface{})[body_key] = body_value
+		for body_key, body_value := range udn_data.JsonBody {
+			udn_data.ApiInput[body_key] = body_value
 		}
 	}
 
-	// Get the cookies: map[string]interface{}
-	udn_data["cookie"] = make(map[string]interface{})
 	for _, cookie := range cookie_array {
-		udn_data["cookie"].(map[string]interface{})[cookie.Name] = cookie.Value
+		udn_data.Cookies[cookie.Name] = cookie.Value
 	}
 
-	// Get the headers: map[string]interface{}
-	udn_data["header"] = make(map[string]interface{})
 	for header_key, header_value_array := range header_map {
 		//TODO(g): Decide what to do with the extra headers in the array later, these will be useful and are necessary to be correct
-		udn_data["header"].(map[string]interface{})[header_key] = header_value_array[0]
+		udn_data.Headers[header_key] = header_value_array[0]
 	}
 
 	// Verify that this user is logged in, render the login page, if they arent logged in
-	udn_data["session"] = make(map[string]interface{})
-	udn_data["user"] = make(map[string]interface{})
-	udn_data["user_data"] = make(map[string]interface{})
-	udn_data["web_site"] = web_site
-	udn_data["web_site_page"] = web_site_page
-	if session_value, ok := udn_data["cookie"].(map[string]interface{})["opsdb_session"]; ok {
-		session_sql := fmt.Sprintf("SELECT * FROM web_user_session WHERE web_site_id = %d AND name = '%s'", web_site["_id"], SanitizeSQL(session_value.(string)))
+	// TODO: Fix hardcoded opsdb_session cookie
+	if session_value, ok := udn_data.Cookies["opsdb_session"]; ok {
+		session_sql := fmt.Sprintf("SELECT * FROM web_user_session WHERE web_site_id = %d AND name = '%s'", udn_data.WebSite["_id"], SanitizeSQL(session_value.(string)))
 		session_rows := Query(db_web, session_sql)
 		if len(session_rows) == 1 {
 			session := session_rows[0]
@@ -321,43 +301,38 @@ func GetStartingUdnData(db_web *sql.DB, db *sql.DB, web_site map[string]interfac
 			fmt.Printf("Found User ID: %d  Session: %v\n\n", user_id, session)
 
 			// Load session from json_data
-			target_map := make(map[string]interface{})
 			if session["data_json"] != nil {
-				err := json.Unmarshal([]byte(session["data_json"].(string)), &target_map)
+				err := json.Unmarshal([]byte(session["data_json"].(string)), &udn_data.Session)
 				if err != nil {
 					log.Panic(err)
 				}
 			}
 
-			fmt.Printf("Session Data: %v\n\n", target_map)
-
-			udn_data["session"] = target_map
+			fmt.Printf("Session Data: %v\n\n", udn_data.Session)
 
 			// Load the user data too
 			user_sql := fmt.Sprintf("SELECT * FROM \"user\" WHERE _id = %d", user_id)
 			user_rows := Query(db_web, user_sql)
-			target_map_user := make(map[string]interface{})
 			if len(user_rows) == 1 {
 				// Set the user here
-				udn_data["user"] = user_rows[0]
+				udn_data.User = user_rows[0]
 
 				// Load from user data from json_data
 				if user_rows[0]["data_json"] != nil {
-					err := json.Unmarshal([]byte(user_rows[0]["data_json"].(string)), &target_map_user)
+					err := json.Unmarshal([]byte(user_rows[0]["data_json"].(string)), &udn_data.UserData)
 					if err != nil {
 						log.Panic(err)
 					}
 				}
 			}
-			fmt.Printf("User Data: %v\n\n", target_map_user)
+			fmt.Printf("User Data: %v\n\n", udn_data.UserData)
 
-			udn_data["user_data"] = target_map_user
 		}
 	}
 
 	// Get the UUID for this request
 	id := ksuid.New()
-	udn_data["uuid"] = id.String()
+	udn_data.UUID = id.String()
 
 	return udn_data
 }
@@ -451,10 +426,10 @@ func dynamicPage_API(db_web *sql.DB, db *sql.DB, web_site map[string]interface{}
 	udn_data := GetStartingUdnData(db_web, db, web_site, web_site_api, uri, web_protocol_action, request_body, param_map, header_map, cookie_array)
 
 	// Output params if logging is allowed
-	if udn_data["web_site_page"].(map[string]interface{})["allow_logging"].(bool) {
+	if udn_data.WebSitePage.AllowLogging {
 		fmt.Printf("Starting UDN Data: %s\n\n", SnippetData(udn_data, 120))
 
-		fmt.Printf("Params: %s\n\n", SnippetData(param_map, 600))
+		fmt.Printf("Params: %s\n\n", SnippetData(udn_data.Param, 600))
 	}
 
 	// Get the base widget
@@ -462,17 +437,17 @@ func dynamicPage_API(db_web *sql.DB, db *sql.DB, web_site map[string]interface{}
 	all_widgets := Query(db_web, sql)
 
 	// Save all our base web_widgets, so we can access them anytime we want
-	udn_data["base_widget"] = MapArrayToMap(all_widgets, "name")
+	udn_data.BaseWidget = MapArrayToMap(all_widgets, "name")
 
 	// Get UDN schema per request
 	//TODO(g): Dont do this every request
 	udn_schema := PrepareSchemaUDN(db_web)
 
 	// Make sure messages are output to screen and logged when it is allowed to do so
-	udn_schema["allow_logging"] = udn_data["web_site_page"].(map[string]interface{})["allow_logging"].(bool)
+	udn_schema["allow_logging"] = udn_data.WebSitePage.AllowLogging
 
 	// If we are being told to debug, do so
-	if param_map["__debug"] != nil {
+	if udn_data.Param["__debug"] != nil {
 		udn_schema["udn_debug"] = true
 	} else if Debug_Udn_Api == true {
 		// API calls are harder to change than web page requests, so made a separate in code var to toggle debugging
@@ -481,7 +456,7 @@ func dynamicPage_API(db_web *sql.DB, db *sql.DB, web_site map[string]interface{}
 
 	// Process the UDN, which updates the pool at udn_data
 	if web_site_api["udn_data_json"] != nil {
-		ProcessSchemaUDNSet(db_web, udn_schema, web_site_api["udn_data_json"].(string), udn_data)
+		ProcessSchemaUDNSet(db_web, udn_schema, web_site_api["udn_data_json"].(string), udn_data.SchemaUDN)
 	} else {
 		fmt.Printf("UDN Execution: API: %s: None\n\n", web_site_api["name"])
 	}
